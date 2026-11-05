@@ -1,1 +1,6 @@
 documents/
+output/
+.venv/
+*.mp4
+*.gif
+*.avi
