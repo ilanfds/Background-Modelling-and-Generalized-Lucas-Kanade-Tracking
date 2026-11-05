@@ -20,8 +20,8 @@ def get_differential_filter():
 
     # === STUDENT SOLUTION GOES HERE ===
     # Central derivative: use [-0.5, 0, 0.5].
-    filter_x = None
-    filter_y = None
+    filter_x = torch.tensor([[0,0,0],[-0.5,0,0.5],[0,0,0]])
+    filter_y = torch.tensor([[0,-0.5,0],[0,0,0],[0,0.5,0]])
     # ==================================
     diff_kernel = torch.stack((filter_x, filter_y))
 
@@ -88,6 +88,28 @@ def optical_flow(image1, image2, window_size):
     # TODO don't forget about batch and channel dimensions you need to provide for the convolutional operator in PyTorch
     # take a look in the documentation
     # ===========================
+    image1 = image1.unsqueeze(0).unsqueeze(0)
+    image2 = image2.unsqueeze(0).unsqueeze(0)
+
+    img1_suave = gaussian_filter(image1)
+    img2_suave = gaussian_filter(image2)
+
+    derivadas = diff_filter(img1_suave)
+    Ix = derivadas[0,0]
+    Iy = derivadas[0,1]
+    It = (img2_suave - img1_suave)[0,0]
+
+    half = window_size // 2
+    H, W = Ix.shape
+    for y in range(half, H - half):
+        for x in range(half, W - half):
+            Ix_win = Ix[y-half: y+half+1, x-half : x+half+1].flatten()
+            Iy_win = Iy[y-half: y+half+1, x-half : x+half+1].flatten()
+            It_win = It[y-half: y+half+1, x-half : x+half+1].flatten()
+            A = torch.stack([Ix_win,Iy_win], dim = 1)
+            b = (It_win*-1).unsqueeze(1)
+            flow_output[y][x] = torch.linalg.lstsq(A,b).solution.flatten()
+        
 
     flow_color = flow_vis.flow_to_color(torch.clamp(flow_output, -1, 1).numpy(), convert_to_bgr=False)
     pyplot.imshow(flow_color)
@@ -96,7 +118,7 @@ def optical_flow(image1, image2, window_size):
 
 
 if __name__ == '__main__':
-    image1 = torch.from_numpy(cv2.imread(f"videos/postcard/thumb00263.png", 0)).float()
-    image2 = torch.from_numpy(cv2.imread(f"videos/postcard/thumb00264.png", 0)).float()
+    image1 = torch.from_numpy(cv2.imread(f"../../data/postcard/thumb00263.png", 0)).float()
+    image2 = torch.from_numpy(cv2.imread(f"../../data/postcard/thumb00264.png", 0)).float()
 
     optical_flow(image1, image2, 5)
