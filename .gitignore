@@ -1,5 +1,6 @@
 documents/
 output/
+data/
 .venv/
 *.mp4
 *.gif
