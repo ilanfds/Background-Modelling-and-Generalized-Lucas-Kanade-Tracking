@@ -29,8 +29,8 @@ def get_differential_filter():
 
     # === STUDENT SOLUTION GOES HERE ===
     # Central derivative must include the factor 1/2.
-    filter_x = None
-    filter_y = None
+    filter_x = torch.tensor([[0,0,0],[-0.5,0,0.5],[0,0,0]])
+    filter_y = torch.tensor([[0,-0.5,0],[0,0,0],[0,0.5,0]])
     # ==================================
     return torch.stack((filter_x, filter_y)).unsqueeze(1)
 
@@ -42,9 +42,17 @@ def jacobian_at_p0(x_shape, y_shape):
     See slide 49 Slide Set 3.
     Think about how the Jacobian looks like for translation + rotation warping!
     """
+    y_coords = torch.arange(y_shape)
+    x_coords = torch.arange(x_shape)
+    yy, xx = torch.meshgrid(y_coords, x_coords, indexing='ij')
 
     # === STUDENT SOLUTION GOES HERE ===
-    jacob = None
+    jacob = torch.zeros(y_shape, x_shape, 2, 3)
+
+    jacob[:, :, 0, 0] = 1
+    jacob[:, :, 1, 1] = 1
+    jacob[:, :, 0, 2] = -yy
+    jacob[:, :, 1, 2] = xx
     # ==================================
 
     return jacob
@@ -56,25 +64,42 @@ def get_affine_transform_from_tr(p):
     """
 
     # === STUDENT SOLUTION GOES HERE ===
-    return None
+    # p = (tx, ty, theta) -> 3x3 homogeneous rotation+translation matrix:
+    #   [ cos  -sin  tx ]
+    #   [ sin   cos  ty ]
+    #   [  0     0    1 ]
+    tx, ty, theta = p[0], p[1], p[2]
+    cos = torch.cos(theta)
+    sin = torch.sin(theta)
+    A = torch.stack([
+        torch.stack([cos, -sin, tx]),
+        torch.stack([sin, cos, ty]),
+        torch.tensor([0.0, 0.0, 1.0]),
+    ])
+    return A
     # ==================================
 
 
 def align_image(template, target, A, point_coords, img_size):
-    # Step 3 -> Evaluate nabla_T
-    img_filter = get_differential_filter()
-    delta_template = None  # TODO (keep the same image dimension using padding!)
+    # Step 3 -> Evaluate nabla_T (gradient of the template, 2 channels: Tx, Ty)
+    img_filter = get_differential_filter()                                   # weight (2,1,3,3)
+    grad = torch.nn.functional.conv2d(template.unsqueeze(0).unsqueeze(0),
+                                      img_filter, padding=1)                 # (1, 2, H, W)
+    delta_template = grad.squeeze(0).permute(1, 2, 0)                        # (H, W, 2) -> [Tx, Ty] per pixel
 
     # Step 4 -> Evaluate the Jacobian del_W / del_p at (x;p=0)
-    jacobian = jacobian_at_p0(template.shape[1], template.shape[0])
+    jacobian = jacobian_at_p0(template.shape[1], template.shape[0])          # (H, W, 2, 3)
 
     # Step 5 -> Compute the steepest descent images nabla_T * del_W / del_p
-    steepest_descent_images = None  # TODO
+    # For each pixel: [Tx, Ty] (1x2) @ Jacobian (2x3) -> 3 values (one per parameter)
+    steepest_descent_images = torch.einsum('hwi,hwij->hwj',
+                                           delta_template, jacobian)         # (H, W, 3)
 
-    # Step 6.1 -> Compute the Hessian matrix
-    hessian = None  # TODO
+    # Step 6.1 -> Compute the Hessian matrix: sum over pixels of SD^T @ SD
+    hessian = torch.einsum('hwi,hwj->ij',
+                           steepest_descent_images, steepest_descent_images) # (3, 3)
     # Step 6.2 -> Compute the inverse of the Hessian matrix
-    hessian_inv = None  # TODO Check out PyTorch documentation on how to calculate the inverse
+    hessian_inv = torch.linalg.inv(hessian)                                  # (3, 3)
 
     # Refining warp function (here translation+rotation)
     refined_A = A
@@ -86,20 +111,23 @@ def align_image(template, target, A, point_coords, img_size):
                                    point_coords=point_coords,
                                    img_size=img_size)
 
-        # Step 2 -> Compute error image, i.e. warped_template - template
-        Ierr = None
+        # Step 2 -> Compute error image, i.e. warped_target - template
+        Ierr = target_warped - template
 
         # Optional: Keep track of error norm
         # Useful for early stopping of refinement if changes are marginal
         # Alternatively: check ||del_p|| -> 0
-        error_norms.append(None)  # TODO
+        error_norm = Ierr.norm()
+        error_norms.append(error_norm)
 
-        # Step 7 -> SD Parameter Updates
-        sd_param_update = None  # TODO
+        # Step 7 -> SD Parameter Updates: sum over pixels of SD^T * (I(W) - T)
+        sd_param_update = torch.einsum('hwj,hw->j',
+                                       steepest_descent_images, Ierr)        # (3,)
 
-        # Step 8 -> Compute delta_p
-        delta_p = None  # TODO
-        refined_A = None  # TODO
+        # Step 8 -> Compute delta_p and update the warp (inverse compositional)
+        delta_p = hessian_inv @ sd_param_update                             # (3,) -> (d_tx, d_ty, d_theta)
+        delta_A = get_affine_transform_from_tr(delta_p)                     # 3x3
+        refined_A = refined_A @ torch.linalg.inv(delta_A)                   # W <- W o W(delta_p)^-1
 
         if error_norm < args.early_stopping:
             break
@@ -153,7 +181,7 @@ def visualize_track_multi_frames(template, img_list, A_list, output_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Generalized Lucas-Kanade Template Tracking")
-    parser.add_argument("--input_path", help="path to the input video sequence", default="videos/postcard")
+    parser.add_argument("--input_path", help="path to the input video sequence", default="../../data/postcard")
     parser.add_argument("--template_path", help="path to the template to track", default="templates/postcard_template.png")
     parser.add_argument("--output_path", help="output directory", default="output")
     parser.add_argument("--max_refine_iters", help="how many maximal warp refinement steps", type=int, default=80)
